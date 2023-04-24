@@ -1,0 +1,426 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Resources:
+# --------------------------------Network Resources---------------------------------------------------------
+  # VPC 
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.100.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+      - Key: Name
+        Value:  !Join ['', [!Ref "AWS::StackName", "-VPC" ]]
+  
+  #InternetGAteway
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+      - Key: Name
+        Value:  !Join ['', [!Ref "AWS::StackName", "-IGW" ]]
+  
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+  
+  # Public Subnet 1
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.100.1.0/24
+      AvailabilityZone: !Select [ 0, !GetAZs ]    # Get the first AZ in the list  
+      MapPublicIpOnLaunch: true      
+      Tags:
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-PublicSubnet-A
+  
+  # Public Subnet 2
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.100.2.0/24
+      AvailabilityZone: !Select [ 1, !GetAZs ]    # Get the second AZ in the list  
+      Tags:
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-PublicSubnet-B
+  
+  # Private Subnet 1
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.100.3.0/24
+      AvailabilityZone: !Select [ 0, !GetAZs ]    # Get the first AZ in the list  
+      Tags:
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-PrivateSubnet-A
+  
+  # Private Subnet 2
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.100.4.0/24
+      AvailabilityZone: !Select [ 1, !GetAZs ]    # Get the second AZ in the list  
+      Tags:
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-PrivateSubnet-B
+  
+  # Public RouteTable
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-PublicRouteTable
+  
+  # Route to IGW
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+
+  # Elastic IP Address
+  ElasticIPAddress:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: VPC
+
+  # A NAT Gateway: 
+  NATGateway:
+    Type: AWS::EC2::NatGateway
+    Properties: 
+      AllocationId: !GetAtt ElasticIPAddress.AllocationId
+      SubnetId: !Ref PublicSubnetA
+      Tags: 
+      - Key: Name
+        Value: !Sub NAT-${AWS::StackName}
+  
+  # Here is a private route table:
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-PrivateRouteTable
+  
+  
+  # Attach the public subnets to public route tables, 
+  # and attach the private subnets to private route tables:    
+ 
+  PublicSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    DependsOn: PublicRoute
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+  
+  PublicSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    DependsOn: PublicRoute
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
+  
+  PrivateSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetA
+      RouteTableId: !Ref PrivateRouteTable
+  
+  PrivateSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetB
+      RouteTableId: !Ref PrivateRouteTable
+  
+  #-----------------------------Security Groups-----------------------------------------
+  #ALB Security Group
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for the ALB
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          CidrIp: 0.0.0.0/0
+      
+      Tags: 
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-alb-sg
+  
+  #EC2 Security Group
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow EC2 instance to access the app
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 5000
+        ToPort: 5000
+        CidrIp: 0.0.0.0/0
+      
+      SecurityGroupEgress:
+      - IpProtocol: tcp
+        FromPort: 0
+        ToPort: 65535
+        CidrIp: 0.0.0.0/0
+  
+  #RDS Security Group
+  RDSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow EC2 instance to access RDS
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 3306
+        ToPort: 3306
+        CidrIp: 0.0.0.0/0
+        
+
+      Tags: 
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-rds-sg
+
+  
+  #------------------------------------------EC2 Resources--------------------------
+
+  #EC2 Key Pair
+  EC2KeyPair:
+    Type: AWS::EC2::KeyPair
+    Properties: 
+      KeyName: !Sub ${AWS::StackName}-ec2-keypair
+
+  
+  
+  #EC2 Role
+  EC2InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Role to provide access to SSM Parameter
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+  
+  #EC2 Instance Profile 
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties: 
+      InstanceProfileName: !Sub ${AWS::StackName}-ec2-instance-profile
+      Roles: 
+       - !Ref EC2InstanceRole
+
+  #---------------------------- ALB Resources ------------------------------------
+  
+  #Target Group
+  ALBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 60
+      HealthCheckPath: /
+      HealthCheckPort: 5000
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 30
+      HealthyThresholdCount: 2
+      Name: !Sub ${AWS::StackName}-targetGrp
+      Port: 5000
+      Protocol: HTTP
+      UnhealthyThresholdCount: 2
+      VpcId: !Ref VPC
+
+  #EC2LaunchTemplate
+  EC2LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    DependsOn: MasterDB
+    Properties:
+      LaunchTemplateData:
+        IamInstanceProfile: 
+          Arn: !GetAtt EC2InstanceProfile.Arn
+        ImageId: ami-0e8a20c6da2c1ffbe
+        InstanceType: t3.micro
+        KeyName: !Ref EC2KeyPair
+        SecurityGroupIds:
+        - !GetAtt InstanceSecurityGroup.GroupId
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash -xe
+            echo "Starting application"
+            python3 /home/ec2-user/app.py
+
+  #AutoScaling Group
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties: 
+      AutoScalingGroupName: !Sub ${AWS::StackName}-asg
+      HealthCheckGracePeriod: 300
+      HealthCheckType: EC2
+      DesiredCapacity: 2
+      MaxSize: 2
+      MinSize: 2
+      LaunchTemplate:
+        LaunchTemplateId: !Ref EC2LaunchTemplate
+        Version: !GetAtt EC2LaunchTemplate.LatestVersionNumber
+      VPCZoneIdentifier:
+      - !Ref PublicSubnetA
+      - !Ref PublicSubnetB
+      TargetGroupARNs:
+        - !Ref ALBTargetGroup
+  
+  ALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    DependsOn:
+      - PublicSubnetARouteTableAssociation
+      - PublicSubnetBRouteTableAssociation
+    Properties:
+      Name: !Sub ${AWS::StackName}-alb
+      Scheme: internet-facing
+      Type: application
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      Subnets: 
+      - !Ref PublicSubnetA
+      - !Ref PublicSubnetB
+      Tags: 
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-alb
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - TargetGroupArn: !Ref ALBTargetGroup
+          Type: forward
+      LoadBalancerArn: !Ref ALB
+      Port: 80
+      Protocol: HTTP
+
+  
+  #------------------- RDS Resources ----------------------------
+  
+  
+  # RDS Subnet Group
+  RDSSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties: 
+      DBSubnetGroupDescription: !Sub ${AWS::StackName}-RDSSubnetGroup
+      DBSubnetGroupName: !Sub ${AWS::StackName}-RDSSubnetGroup
+      SubnetIds: 
+        - !Ref PublicSubnetA
+        - !Ref PublicSubnetB
+      Tags: 
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-RDSSubnetGroup
+
+  
+  
+  #Master DB
+  MasterDB:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: !Sub ${AWS::StackName}-rds
+      DBSnapshotIdentifier: arn:aws:rds:us-east-1:156463586173:snapshot:skillsdb-snapshot
+      DBSubnetGroupName: !Ref RDSSubnetGroup
+      AllocatedStorage: 20
+      DBInstanceClass: db.t3.micro
+      Engine: MySQL
+      PubliclyAccessible: false
+      MultiAZ: false
+      MasterUsername: user
+      MasterUserPassword: !Join ['s', ['rd', !Select [4, !Split ['-', !Select [2, !Split ['/', !Ref AWS::StackId]]]]]]
+      VPCSecurityGroups:
+      - !GetAtt RDSSecurityGroup.GroupId
+      Tags:
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-rds
+      
+  
+  #RDS Port
+  DatabasePort:
+    Type: AWS::SSM::Parameter
+    DependsOn: MasterDB
+    Properties:
+      Name: port
+      Description: Aurora MySQL RDS Server Port
+      Type: String
+      Value: !GetAtt MasterDB.Endpoint.Port
+  
+  #RDS Host
+  DatabaseHost:
+    Type: AWS::SSM::Parameter
+    DependsOn: MasterDB
+    Properties:
+      Name: host
+      Description: Aurora MySQL RDS Server Url
+      Type: String
+      Value: !GetAtt MasterDB.Endpoint.Address
+  
+  #RDS Password 
+  DatabasePassword:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: password
+      Description: Aurora MySQL RDS Server Password
+      Type: String
+      Value: !Join ['s', ['rd', !Select [4, !Split ['-', !Select [2, !Split ['/', !Ref AWS::StackId]]]]]]
+      
+  
+  #RDS User
+  DatabaseUser:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: username
+      Description: Aurora MySQL RDS Server User
+      Type: String
+      Value: user
+
+  #RDS SSM Params
+  DatabaseName:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: database
+      Description: Aurora MySQL RDS Server DB name
+      Type: String
+      Value: skillsontario
+
+  
+
+Outputs:
+
+  ALBDNSName:
+    Description: The URL of the ALB
+    Value:  !GetAtt ALB.DNSName
+  
+ 
+
+
+  
+
