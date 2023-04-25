@@ -265,7 +265,7 @@ Resources:
       LaunchTemplateData:
         IamInstanceProfile: 
           Arn: !GetAtt EC2InstanceProfile.Arn
-        ImageId: ami-0e8a20c6da2c1ffbe
+        ImageId: ami-06ee50f8c9e84937f
         InstanceType: t3.micro
         KeyName: !Ref EC2KeyPair
         SecurityGroupIds:
