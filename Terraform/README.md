@@ -68,7 +68,7 @@ Open your browser and navigate to your ALB URL to confirm that you can load the 
 
 Here's a diagram of the application hosting solution:
 
-![Application hosting solution](../../images/Diagram_v2.png)
+![Application hosting solution](../images/Diagram_v2.png)
 
 ## Invoking Application
 
