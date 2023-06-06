@@ -115,8 +115,15 @@ Resources:
       Tags:
       - Key: Name
         Value: !Sub ${AWS::StackName}-PrivateRouteTable
-  
-  
+  #####
+  RouteNATGateway:
+   DependsOn: NATGateway
+   Type: AWS::EC2::Route
+   Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: '0.0.0.0/0'
+      NatGatewayId: !Ref NATGateway
+  #####
   # Attach the public subnets to public route tables, 
   # and attach the private subnets to private route tables:    
  
@@ -167,6 +174,24 @@ Resources:
       Tags: 
       - Key: Name
         Value: !Sub ${AWS::StackName}-alb-sg
+
+  #Bastion Host Security Group
+  BastionHostSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Access EC2 instances in private subnet
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 22
+        ToPort: 22
+        CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+      - IpProtocol: tcp
+        FromPort: 0
+        ToPort: 65535
+        CidrIp: 0.0.0.0/0
+
   
   #EC2 Security Group
   InstanceSecurityGroup:
@@ -178,7 +203,12 @@ Resources:
       - IpProtocol: tcp
         FromPort: 5000
         ToPort: 5000
-        CidrIp: 0.0.0.0/0
+        #CidrIp: 0.0.0.0/0
+        SourceSecurityGroupId: !Ref ALBSecurityGroup  ###
+      - IpProtocol: tcp
+        FromPort: 22
+        ToPort: 22
+        SourceSecurityGroupId: !Ref BastionHostSG 
       
       SecurityGroupEgress:
       - IpProtocol: tcp
@@ -196,9 +226,7 @@ Resources:
       - IpProtocol: tcp
         FromPort: 3306
         ToPort: 3306
-        CidrIp: 0.0.0.0/0
-        
-
+        SourceSecurityGroupId: !Ref InstanceSecurityGroup ###
       Tags: 
       - Key: Name
         Value: !Sub ${AWS::StackName}-rds-sg
@@ -239,6 +267,20 @@ Resources:
       Roles: 
        - !Ref EC2InstanceRole
 
+#####
+  #Bastion Host
+  BastionHost:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-03c7d01cf4dedc891
+      InstanceType: t2.micro
+      KeyName: !Sub ${AWS::StackName}-ec2-keypair
+      SecurityGroupIds: 
+        - !Ref BastionHostSG
+      SubnetId: !Ref PublicSubnetA
+ ###
+
+
   #---------------------------- ALB Resources ------------------------------------
   
   #Target Group
@@ -261,6 +303,34 @@ Resources:
   EC2LaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     DependsOn: MasterDB
+    Metadata:  #####
+      Comment: "Install Docker and Containerize the application"
+      'AWS::CloudFormation::Init':
+        config:
+          packages:
+            yum:
+              docker: []
+          files:
+            /home/ec2-user/Dockerfile:
+              content: !Join
+                - ''
+                - - |
+                  - FROM python:alpine3.7
+                  - |
+                  - COPY . /app
+                  - |
+                  - WORKDIR /app
+                  - |
+                  - RUN chmod +x bash.sh
+                  - |
+                  - RUN ./bash.sh
+                  - |
+                  - EXPOSE 5002
+                  - |
+                  - ENTRYPOINT [ "python" ]
+                  - |
+                  - CMD [ "app.py" ]
+              
     Properties:
       LaunchTemplateData:
         IamInstanceProfile: 
@@ -270,11 +340,14 @@ Resources:
         KeyName: !Ref EC2KeyPair
         SecurityGroupIds:
         - !GetAtt InstanceSecurityGroup.GroupId
-        UserData:
+        UserData: ####
           Fn::Base64: !Sub |
             #!/bin/bash -xe
             echo "Starting application"
-            python3 /home/ec2-user/app.py
+            yum -y update 
+            docker build -t python/flask .
+            docker run python/flask - 5000:5000
+            #python3 /home/ec2-user/app.py
 
   #AutoScaling Group
   AutoScalingGroup:
@@ -290,8 +363,8 @@ Resources:
         LaunchTemplateId: !Ref EC2LaunchTemplate
         Version: !GetAtt EC2LaunchTemplate.LatestVersionNumber
       VPCZoneIdentifier:
-      - !Ref PublicSubnetA
-      - !Ref PublicSubnetB
+      - !Ref PrivateSubnetA
+      - !Ref PrivateSubnetB
       TargetGroupARNs:
         - !Ref ALBTargetGroup
   
@@ -334,8 +407,8 @@ Resources:
       DBSubnetGroupDescription: !Sub ${AWS::StackName}-RDSSubnetGroup
       DBSubnetGroupName: !Sub ${AWS::StackName}-RDSSubnetGroup
       SubnetIds: 
-        - !Ref PublicSubnetA
-        - !Ref PublicSubnetB
+        - !Ref PrivateSubnetA ##
+        - !Ref PrivateSubnetB ###
       Tags: 
       - Key: Name
         Value: !Sub ${AWS::StackName}-RDSSubnetGroup
@@ -411,7 +484,64 @@ Resources:
       Type: String
       Value: skillsontario
 
-  
+# My Changes
+
+  CPUUtilizatin:
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription:
+        - Endpoint: "e@mail.com"
+          Protocol: "email"
+      TopicName: "CPUUtilization"
+
+  CPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: CPU alarm for my instance
+      AlarmActions:
+      - Ref: "CPUUtilization"
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: '60'
+      EvaluationPeriods: '3'
+      Threshold: '90'
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+      - Name: InstanceId
+        Value:
+          Ref: !Sub ${AWS::EC2:Instances}
+
+  # MyCertificate: 
+  #   Type: "AWS::CertificateManager::Certificate"
+  #   Properties: 
+  #     DomainName: example.com
+  #     ValidationMethod: DNS
+
+  # PreventCloudTrailDisablementSCP:
+  #     Type: AWS::Organizations::Policy
+  #     Properties:
+  #         TargetIds: [{"Ref": "ALBSecurityGroup"}, {"Ref": "InstanceSecurityGroup"}, {"Ref": "RDSSecurityGroup"}]
+  #         Name: PreventCloudTrailDisablement
+  #         Description: Prevent users from disabling CloudTrail or altering its configuration
+  #         Type: SERVICE_CONTROL_POLICY
+  #         Content: >-
+  #           {
+  #             "Version": "2012-10-17",
+  #             "Statement": [
+  #               {
+  #                 "Effect": "Deny",
+  #                 "Action": [
+  #                   "cloudtrail:DeleteTrail",
+  #                   "cloudtrail:PutEventSelectors",
+  #                   "cloudtrail:StopLogging", 
+  #                   "cloudtrail:UpdateTrail" 
+
+  #                 ],
+  #                 "Resource": "*"
+  #               }
+  #             ]
+  #           }
 
 Outputs:
 
